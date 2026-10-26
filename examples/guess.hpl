@@ -1,0 +1,53 @@
+// Number guessing game: a small console application in HCPL.
+// Run: src/lua examples/guess.hpl
+
+include math;
+
+function ask(question) {
+    io.write(question);
+    return io.read("l");
+}
+
+task Play {
+    let secret be math.random(1 and 100);
+    let tries be 0;
+    let playing be yes;
+
+    print "I'm thinking of a number between 1 and 100.";
+    while playing {
+        let answer be ask("Your guess: ");
+        if answer is equal to nil {
+            print "Bye!";
+            return;
+        }
+        let guess be tonumber(answer);
+        if guess is equal to nil {
+            print "Please type a number.";
+        }
+        else {
+            increase tries by 1;
+            if guess is less than secret {
+                print "Higher!";
+            }
+            else if guess is greater than secret {
+                print "Lower!";
+            }
+            else {
+                print "You got it in " + tries + " tries!";
+                set playing to no;
+            }
+        }
+    }
+}
+
+program Main {
+    start {
+        print "== Guess the Number ==";
+        let again be "y";
+        while again is equal to "y" {
+            Play();
+            set again to ask("Play again? (y/n) ");
+        }
+        print "Thanks for playing!";
+    }
+}
