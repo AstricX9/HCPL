@@ -19,7 +19,7 @@ https://github.com/AstricX9/Human-Centred-Programming-Language
     make test         # runs tests/language.hpl
     src/lua examples/hello.hpl
 
-On Windows without make, install gcc (MSYS2 / MinGW-w64) and run:
+On Windows without make, run this (it uses gcc, or Visual Studio if gcc is missing):
 
     .\build.bat
     .\hcpl.exe examples\guess.hpl
