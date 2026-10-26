@@ -297,6 +297,13 @@ static int arith (lua_State *L, int op, const char *mtname) {
 
 
 static int arith_add (lua_State *L) {
+  /* HCPL: '+' with a string operand joins text ("Sum is " + 30) */
+  if (lua_type(L, 1) == LUA_TSTRING || lua_type(L, 2) == LUA_TSTRING) {
+    luaL_tolstring(L, 1, NULL);
+    luaL_tolstring(L, 2, NULL);
+    lua_concat(L, 2);
+    return 1;
+  }
   return arith(L, LUA_OPADD, "__add");
 }
 

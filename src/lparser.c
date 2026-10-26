@@ -140,6 +140,19 @@ static void check_match (LexState *ls, int what, int who, int where) {
 }
 
 
+/* HCPL: is the current token the (non-reserved) word 'w'? */
+static int isword (LexState *ls, const char *w) {
+  return ls->t.token == TK_NAME && strcmp(getstr(ls->t.seminfo.ts), w) == 0;
+}
+
+
+static void checkword (LexState *ls, const char *w) {
+  if (!isword(ls, w))
+    luaX_syntaxerror(ls, luaO_pushfstring(ls->L, "'%s' expected", w));
+  luaX_next(ls);
+}
+
+
 static TString *str_checkname (LexState *ls) {
   TString *ts;
   check(ls, TK_NAME);
@@ -866,7 +879,7 @@ static void close_func (LexState *ls) {
 static int block_follow (LexState *ls, int withuntil) {
   switch (ls->t.token) {
     case TK_ELSE: case TK_ELSEIF:
-    case TK_END: case TK_EOS:
+    case TK_END: case TK_EOS: case '}':
       return 1;
     case TK_UNTIL: return withuntil;
     default: return 0;
@@ -1033,6 +1046,7 @@ static void constructor (LexState *ls, expdesc *t) {
   FuncState *fs = ls->fs;
   int line = ls->linenumber;
   int pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+  int argand = ls->argand;
   ConsControl cc;
   luaK_code(fs, 0);  /* space for extra arg. */
   cc.na = cc.nh = cc.tostore = 0;
@@ -1041,6 +1055,7 @@ static void constructor (LexState *ls, expdesc *t) {
   luaK_reserveregs(fs, 1);
   init_exp(&cc.v, VVOID, 0);  /* no value (yet) */
   checknext(ls, '{' /*}*/);
+  ls->argand = 0;  /* 'and' is logical inside a table */
   cc.maxtostore = maxtostore(fs);
   do {
     if (ls->t.token == /*{*/ '}') break;
@@ -1051,6 +1066,7 @@ static void constructor (LexState *ls, expdesc *t) {
                     "items in a constructor");
   } while (testnext(ls, ',') || testnext(ls, ';'));
   check_match(ls, /*{*/ '}', '{' /*}*/, line);
+  ls->argand = argand;
   lastlistfield(fs, &cc);
   luaK_settablesize(fs, pc, t->u.info, cc.na, cc.nh);
 }
@@ -1089,7 +1105,7 @@ static void parlist (LexState *ls) {
         }
         default: luaX_syntaxerror(ls, "<name> or '...' expected");
       }
-    } while (!varargk && testnext(ls, ','));
+    } while (!varargk && (testnext(ls, ',') || testnext(ls, TK_AND)));
   }
   adjustlocalvars(ls, nparams);
   f->numparams = cast_byte(fs->nactvar);
@@ -1103,24 +1119,33 @@ static void parlist (LexState *ls) {
 
 
 static void body (LexState *ls, expdesc *e, int ismethod, int line) {
-  /* body ->  '(' parlist ')' block END */
+  /* body ->  ['(' parlist ')'] '{' block '}' */
   FuncState new_fs;
   BlockCnt bl;
+  int argand = ls->argand;
+  ls->argand = 0;
   new_fs.f = addprototype(ls);
   new_fs.f->linedefined = line;
   open_func(ls, &new_fs, &bl);
-  checknext(ls, '(');
   if (ismethod) {
     new_localvarliteral(ls, "self");  /* create 'self' parameter */
     adjustlocalvars(ls, 1);
   }
-  parlist(ls);
-  checknext(ls, ')');
+  if (testnext(ls, '(')) {
+    parlist(ls);
+    checknext(ls, ')');
+  }
+  else {  /* HCPL task: no parameter list */
+    new_fs.f->numparams = cast_byte(new_fs.nactvar);
+    luaK_reserveregs(&new_fs, new_fs.nactvar);
+  }
+  checknext(ls, '{');
   statlist(ls);
   new_fs.f->lastlinedefined = ls->linenumber;
-  check_match(ls, TK_END, TK_FUNCTION, line);
+  check_match(ls, '}', '{', line);
   codeclosure(ls, e);
   close_func(ls);
+  ls->argand = argand;
 }
 
 
@@ -1128,7 +1153,7 @@ static int explist (LexState *ls, expdesc *v) {
   /* explist -> expr { ',' expr } */
   int n = 1;  /* at least one expression */
   expr(ls, v);
-  while (testnext(ls, ',')) {
+  while (testnext(ls, ',') || (ls->argand && testnext(ls, TK_AND))) {
     luaK_exp2nextreg(ls->fs, v);
     expr(ls, v);
     n++;
@@ -1144,7 +1169,9 @@ static void funcargs (LexState *ls, expdesc *f) {
   int line = ls->linenumber;
   switch (ls->t.token) {
     case '(': {  /* funcargs -> '(' [ explist ] ')' */
+      int argand = ls->argand;
       luaX_next(ls);
+      ls->argand = 1;
       if (ls->t.token == ')')  /* arg list is empty? */
         args.k = VVOID;
       else {
@@ -1152,11 +1179,8 @@ static void funcargs (LexState *ls, expdesc *f) {
         if (hasmultret(args.k))
           luaK_setmultret(fs, &args);
       }
+      ls->argand = argand;
       check_match(ls, ')', '(', line);
-      break;
-    }
-    case '{' /*}*/: {  /* funcargs -> constructor */
-      constructor(ls, &args);
       break;
     }
     case TK_STRING: {  /* funcargs -> STRING */
@@ -1200,8 +1224,11 @@ static void primaryexp (LexState *ls, expdesc *v) {
   switch (ls->t.token) {
     case '(': {
       int line = ls->linenumber;
+      int argand = ls->argand;
       luaX_next(ls);
+      ls->argand = 0;
       expr(ls, v);
+      ls->argand = argand;
       check_match(ls, ')', '(', line);
       luaK_dischargevars(ls->fs, v);
       return;
@@ -1243,7 +1270,7 @@ static void suffixedexp (LexState *ls, expdesc *v) {
         funcargs(ls, v);
         break;
       }
-      case '(': case TK_STRING: case '{' /*}*/: {  /* funcargs */
+      case '(': case TK_STRING: {  /* funcargs */
         luaK_exp2nextreg(fs, v);
         funcargs(ls, v);
         break;
@@ -1320,6 +1347,39 @@ static UnOpr getunopr (int op) {
 }
 
 
+/*
+** HCPL comparisons: 'is [not] equal to', 'is greater|less than [or equal to]'
+*/
+static BinOpr comparison (LexState *ls) {
+  int greater;
+  luaX_next(ls);  /* skip 'is' */
+  if (testnext(ls, TK_NOT)) {
+    checkword(ls, "equal");
+    checkword(ls, "to");
+    return OPR_NE;
+  }
+  if (isword(ls, "equal")) {
+    luaX_next(ls);
+    checkword(ls, "to");
+    return OPR_EQ;
+  }
+  greater = isword(ls, "greater");
+  if (!greater && !isword(ls, "less"))
+    luaX_syntaxerror(ls, "'equal', 'not', 'greater' or 'less' expected");
+  luaX_next(ls);
+  checkword(ls, "than");
+  /* 'or equal to' belongs to the comparison; any other 'or' is logical */
+  if (ls->t.token == TK_OR && luaX_lookahead(ls) == TK_NAME &&
+      strcmp(getstr(ls->lookahead.seminfo.ts), "equal") == 0) {
+    luaX_next(ls);
+    luaX_next(ls);
+    checkword(ls, "to");
+    return greater ? OPR_GE : OPR_LE;
+  }
+  return greater ? OPR_GT : OPR_LT;
+}
+
+
 static BinOpr getbinopr (int op) {
   switch (op) {
     case '+': return OPR_ADD;
@@ -1349,16 +1409,34 @@ static BinOpr getbinopr (int op) {
 
 
 /*
+** Read a binary operator and skip it (HCPL comparisons span several
+** words). Inside call arguments 'and' is a separator, not an operator.
+*/
+static BinOpr readbinopr (LexState *ls) {
+  BinOpr op;
+  if (ls->t.token == TK_IS)
+    return comparison(ls);
+  if (ls->t.token == TK_AND && ls->argand)
+    return OPR_NOBINOPR;
+  op = getbinopr(ls->t.token);
+  if (op != OPR_NOBINOPR)
+    luaX_next(ls);  /* skip operator */
+  return op;
+}
+
+
+/*
 ** Priority table for binary operators.
+** HCPL: arithmetic has no precedence, it evaluates left to right.
 */
 static const struct {
   lu_byte left;  /* left priority for each binary operator */
   lu_byte right; /* right priority */
 } priority[] = {  /* ORDER OPR */
    {10, 10}, {10, 10},           /* '+' '-' */
-   {11, 11}, {11, 11},           /* '*' '%' */
+   {10, 10}, {10, 10},           /* '*' '%' */
    {14, 13},                  /* '^' (right associative) */
-   {11, 11}, {11, 11},           /* '/' '//' */
+   {10, 10}, {10, 10},           /* '/' '//' */
    {6, 6}, {4, 4}, {5, 5},   /* '&' '|' '~' */
    {7, 7}, {7, 7},           /* '<<' '>>' */
    {9, 8},                   /* '..' (right associative) */
@@ -1382,17 +1460,18 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
   if (uop != OPR_NOUNOPR) {  /* prefix (unary) operator? */
     int line = ls->linenumber;
     luaX_next(ls);  /* skip operator */
-    subexpr(ls, v, UNARY_PRIORITY);
+    op = subexpr(ls, v, UNARY_PRIORITY);  /* operator already read */
     luaK_prefix(ls->fs, uop, v, line);
   }
-  else simpleexp(ls, v);
+  else {
+    simpleexp(ls, v);
+    op = readbinopr(ls);
+  }
   /* expand while operators have priorities higher than 'limit' */
-  op = getbinopr(ls->t.token);
   while (op != OPR_NOBINOPR && priority[op].left > limit) {
     expdesc v2;
     BinOpr nextop;
     int line = ls->linenumber;
-    luaX_next(ls);  /* skip operator */
     luaK_infix(ls->fs, op, v);
     /* read sub-expression with higher priority */
     nextop = subexpr(ls, &v2, priority[op].right);
@@ -1426,6 +1505,14 @@ static void block (LexState *ls) {
   enterblock(fs, &bl, 0);
   statlist(ls);
   leaveblock(fs);
+}
+
+
+static void braceblock (LexState *ls, int line) {
+  /* braceblock -> '{' block '}' */
+  checknext(ls, '{');
+  block(ls);
+  check_match(ls, '}', '{', line);
 }
 
 
@@ -1593,10 +1680,10 @@ static void whilestat (LexState *ls, int line) {
   whileinit = luaK_getlabel(fs);
   condexit = cond(ls);
   enterblock(fs, &bl, 1);
-  checknext(ls, TK_DO);
+  checknext(ls, '{');
   block(ls);
   luaK_jumpto(fs, whileinit);
-  check_match(ls, TK_END, TK_WHILE, line);
+  check_match(ls, '}', '{', line);
   leaveblock(fs);
   luaK_patchtohere(fs, condexit);  /* false conditions finish the loop */
 }
@@ -1666,7 +1753,7 @@ static void forbody (LexState *ls, int base, int line, int nvars, int isgen) {
   BlockCnt bl;
   FuncState *fs = ls->fs;
   int prep, endfor;
-  checknext(ls, TK_DO);
+  checknext(ls, '{');
   prep = luaK_codeABx(fs, forprep[isgen], base, 0);
   fs->freereg--;  /* both 'forprep' remove one register from the stack */
   enterblock(fs, &bl, 0);  /* scope for declared variables */
@@ -1747,7 +1834,7 @@ static void forstat (LexState *ls, int line) {
     case ',': case TK_IN: forlist(ls, varname); break;
     default: luaX_syntaxerror(ls, "'=' or 'in' expected");
   }
-  check_match(ls, TK_END, TK_FOR, line);
+  check_match(ls, '}', '{', line);
   leaveblock(fs);  /* loop scope ('break' jumps to this point) */
 }
 
@@ -1758,8 +1845,7 @@ static void test_then_block (LexState *ls, int *escapelist) {
   int condtrue;
   luaX_next(ls);  /* skip IF or ELSEIF */
   condtrue = cond(ls);  /* read condition */
-  checknext(ls, TK_THEN);
-  block(ls);  /* 'then' part */
+  braceblock(ls, ls->linenumber);  /* 'then' part */
   if (ls->t.token == TK_ELSE ||
       ls->t.token == TK_ELSEIF)  /* followed by 'else'/'elseif'? */
     luaK_concat(fs, escapelist, luaK_jump(fs));  /* must jump over it */
@@ -1772,11 +1858,14 @@ static void ifstat (LexState *ls, int line) {
   FuncState *fs = ls->fs;
   int escapelist = NO_JUMP;  /* exit list for finished parts */
   test_then_block(ls, &escapelist);  /* IF cond THEN block */
-  while (ls->t.token == TK_ELSEIF)
+  while (ls->t.token == TK_ELSEIF ||
+         (ls->t.token == TK_ELSE && luaX_lookahead(ls) == TK_IF)) {
+    if (ls->t.token == TK_ELSE)
+      luaX_next(ls);  /* 'else if': skip 'else' */
     test_then_block(ls, &escapelist);  /* ELSEIF cond THEN block */
+  }
   if (testnext(ls, TK_ELSE))
-    block(ls);  /* 'else' part */
-  check_match(ls, TK_END, TK_IF, line);
+    braceblock(ls, line);  /* 'else' part */
   luaK_patchtohere(fs, escapelist);  /* patch escape list to 'if' end */
 }
 
@@ -2049,6 +2138,184 @@ static void retstat (LexState *ls) {
 }
 
 
+/*
+** {======================================================================
+** HCPL statements
+** =======================================================================
+*/
+
+
+/* anchored string for a name the parser makes up */
+#define newliteral(ls,v)	luaX_newstring(ls, "" v, (sizeof(v)/sizeof(char)) - 1)
+
+
+/* put variable 'fname' in the next register, as a function to call */
+static int loadfunc (LexState *ls, TString *fname, expdesc *f) {
+  buildvar(ls, fname, f);
+  luaK_exp2nextreg(ls->fs, f);
+  return f->u.info;
+}
+
+
+/* call the function in register 'base' with the arguments above it */
+static void callfunc (LexState *ls, expdesc *f, int base, int nresults,
+                      int line) {
+  FuncState *fs = ls->fs;
+  init_exp(f, VCALL, luaK_codeABC(fs, OP_CALL, base,
+                                  fs->freereg - base, nresults + 1));
+  luaK_fixline(fs, line);
+  fs->freereg = cast_byte(base + nresults);
+}
+
+
+static void letstat (LexState *ls) {
+  /* stat -> LET NAME ('be' | '=') explist */
+  expdesc e;
+  int nexps;
+  new_localvar(ls, str_checkname(ls));
+  if (!testnext(ls, '='))
+    checkword(ls, "be");
+  nexps = explist(ls, &e);
+  adjust_assign(ls, 1, nexps, &e);
+  adjustlocalvars(ls, 1);
+}
+
+
+static void setstat (LexState *ls) {
+  /* stat -> SET suffixedexp 'to' expr */
+  expdesc v, e;
+  suffixedexp(ls, &v);
+  check_condition(ls, vkisvar(v.k), "syntax error");
+  check_readonly(ls, &v);
+  checkword(ls, "to");
+  expr(ls, &e);
+  luaK_storevar(ls->fs, &v, &e);
+}
+
+
+static void printstat (LexState *ls, int line) {
+  /* stat -> PRINT expr */
+  expdesc f, e;
+  int base = loadfunc(ls, newliteral(ls, "print"), &f);
+  expr(ls, &e);
+  luaK_exp2nextreg(ls->fs, &e);
+  callfunc(ls, &f, base, 0, line);
+}
+
+
+static void includestat (LexState *ls, int line) {
+  /* stat -> INCLUDE NAME {'.' NAME}  (single NAME: NAME = require "NAME") */
+  char buff[LUAI_MAXSHORTLEN];
+  size_t len;
+  TString *first = str_checkname(ls);
+  expdesc v, f, arg;
+  int base;
+  len = tsslen(first);
+  memcpy(buff, getstr(first), len);
+  while (testnext(ls, '.')) {
+    TString *part = str_checkname(ls);
+    size_t plen = tsslen(part);
+    if (len + 1 + plen > sizeof(buff))
+      luaX_syntaxerror(ls, "module name too long");
+    buff[len++] = '.';
+    memcpy(buff + len, getstr(part), plen);
+    len += plen;
+  }
+  /* shortcut: a dotted module is only loaded, its caller names it */
+  if (len == tsslen(first))
+    buildvar(ls, first, &v);
+  base = loadfunc(ls, newliteral(ls, "require"), &f);
+  codestring(&arg, luaX_newstring(ls, buff, len));
+  luaK_exp2nextreg(ls->fs, &arg);
+  callfunc(ls, &f, base, (len == tsslen(first)), line);
+  if (len == tsslen(first)) {
+    check_readonly(ls, &v);
+    luaK_storevar(ls->fs, &v, &f);
+  }
+}
+
+
+static void naturalstat (LexState *ls, BinOpr op, int line) {
+  /* stat -> ('increase'|'reduce'|'multiply'|'divide') NAME 'by' expr */
+  FuncState *fs = ls->fs;
+  expdesc v, cur, e;
+  luaX_next(ls);  /* skip verb */
+  /* shortcut: names only; an indexed target would need its table kept
+     in a register across the read and the write */
+  singlevar(ls, &v);
+  check_readonly(ls, &v);
+  checkword(ls, "by");
+  cur = v;
+  luaK_infix(fs, op, &cur);
+  expr(ls, &e);
+  luaK_posfix(fs, op, &cur, &e, line);
+  luaK_storevar(fs, &v, &cur);
+}
+
+
+static BinOpr naturalop (LexState *ls) {
+  BinOpr op;
+  if (isword(ls, "increase")) op = OPR_ADD;
+  else if (isword(ls, "reduce")) op = OPR_SUB;
+  else if (isword(ls, "multiply")) op = OPR_MUL;
+  else if (isword(ls, "divide")) op = OPR_DIV;
+  else return OPR_NOBINOPR;
+  /* a verb followed by a name; otherwise it is an ordinary variable */
+  return (luaX_lookahead(ls) == TK_NAME) ? op : OPR_NOBINOPR;
+}
+
+
+static void taskstat (LexState *ls, int line) {
+  /* stat -> TASK funcname body  (a function with no parameters) */
+  expdesc v, b;
+  luaX_next(ls);  /* skip TASK */
+  funcname(ls, &v);
+  check_readonly(ls, &v);
+  if (ls->t.token == '(')
+    luaX_syntaxerror(ls, "a task has no parameters (use 'function')");
+  body(ls, &b, 0, line);
+  luaK_storevar(ls->fs, &v, &b);
+  luaK_fixline(ls->fs, line);
+}
+
+
+static void programstat (LexState *ls, int line) {
+  /* stat -> PROGRAM NAME '{' { 'start' body | stat } '}'
+     The 'start' block runs when the program's declarations are done. */
+  FuncState *fs = ls->fs;
+  BlockCnt bl;
+  TString *startn = newliteral(ls, "(start)");
+  int hasstart = 0;
+  luaX_next(ls);  /* skip PROGRAM */
+  str_checkname(ls);  /* program name */
+  checknext(ls, '{');
+  enterblock(fs, &bl, 0);
+  while (ls->t.token != '}' && ls->t.token != TK_EOS) {
+    if (isword(ls, "start") && luaX_lookahead(ls) == '{') {
+      expdesc b;
+      if (hasstart)
+        luaK_semerror(ls, "program has more than one 'start' block");
+      hasstart = 1;
+      luaX_next(ls);  /* skip 'start' */
+      new_localvar(ls, startn);
+      adjustlocalvars(ls, 1);
+      body(ls, &b, 0, ls->linenumber);
+      fs->freereg = luaY_nvarstack(fs);
+    }
+    else
+      statement(ls);
+  }
+  if (hasstart) {
+    expdesc f;
+    callfunc(ls, &f, loadfunc(ls, startn, &f), 0, line);
+  }
+  check_match(ls, '}', '{', line);
+  leaveblock(fs);
+}
+
+/* }====================================================================== */
+
+
 static void statement (LexState *ls) {
   int line = ls->linenumber;  /* may be needed for error messages */
   enterlevel(ls);
@@ -2067,8 +2334,7 @@ static void statement (LexState *ls) {
     }
     case TK_DO: {  /* stat -> DO block END */
       luaX_next(ls);  /* skip DO */
-      block(ls);
-      check_match(ls, TK_END, TK_DO, line);
+      braceblock(ls, line);
       break;
     }
     case TK_FOR: {  /* stat -> forstat */
@@ -2114,6 +2380,34 @@ static void statement (LexState *ls) {
       gotostat(ls, line);
       break;
     }
+    case TK_LET: {
+      luaX_next(ls);  /* skip LET */
+      letstat(ls);
+      break;
+    }
+    case TK_SET: {
+      luaX_next(ls);  /* skip SET */
+      setstat(ls);
+      break;
+    }
+    case TK_PRINT: {
+      luaX_next(ls);  /* skip PRINT */
+      printstat(ls, line);
+      break;
+    }
+    case TK_INCLUDE: {
+      luaX_next(ls);  /* skip INCLUDE */
+      includestat(ls, line);
+      break;
+    }
+    case TK_TASK: {
+      taskstat(ls, line);
+      break;
+    }
+    case TK_PROGRAM: {
+      programstat(ls, line);
+      break;
+    }
 #if LUA_COMPAT_GLOBAL
     case TK_NAME: {
       /* compatibility code to parse global keyword when "global"
@@ -2130,8 +2424,12 @@ static void statement (LexState *ls) {
     }
 #endif
     /* FALLTHROUGH */
-    default: {  /* stat -> func | assignment */
-      exprstat(ls);
+    default: {  /* stat -> func | assignment | natural arithmetic */
+      BinOpr op = naturalop(ls);
+      if (op != OPR_NOBINOPR)
+        naturalstat(ls, op, line);
+      else
+        exprstat(ls);
       break;
     }
   }

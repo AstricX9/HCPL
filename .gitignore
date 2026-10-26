@@ -1,0 +1,5 @@
+# Build outputs
+*.o
+*.a
+src/lua
+src/luac

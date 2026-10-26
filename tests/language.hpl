@@ -1,0 +1,146 @@
+// HCPL v0.1 language self-check. Run: src/lua tests/language.hpl
+// Every line that matters is an assert; the file prints "ok" at the end.
+
+include math;
+
+/* Block comments span
+   several lines. */
+
+// Variables and assignment
+let count be 120;
+let ratio = 14.5;
+set count to count + 1;
+assert(count is equal to 121);
+set total to 5;                      // 'set' creates a variable on first use
+assert(total is equal to 5);
+
+// No operator precedence: left to right
+assert(10 + 5 * 2 is equal to 30);
+assert(2 * (3 + 4) is equal to 14);
+assert(-7 + 1 is equal to -6);
+
+// Literals
+assert(yes is equal to true);
+assert(no is equal to false);
+assert(30s is equal to 30);
+assert(2m is equal to 120);
+assert(1h is equal to 3600);
+assert(1.5e3 is equal to 1500);
+assert("she said \"hi\"" is equal to 'she said "hi"');
+
+// Text joins with '+'
+assert("Sum is " + 30 is equal to "Sum is 30");
+assert(1 + 2 + " apples" is equal to "3 apples");
+
+// Comparisons
+let a be 5;
+let b be 3;
+assert(a is greater than b);
+assert(a is greater than or equal to 5);
+assert(b is less than a);
+assert(b is less than or equal to 3);
+assert(a is not equal to b);
+assert(not (a is equal to b));
+
+// 'or' as a connector, not part of the comparator
+let hit be no;
+if a is greater than 100 or b is less than 4 {
+    set hit to yes;
+}
+assert(hit);
+
+// 'and' between comparisons
+set hit to no;
+if a is greater than b and b is not equal to 0 {
+    set hit to yes;
+}
+assert(hit);
+
+// Functions: parameters and arguments are linked with 'and'
+function clamp(value and min and max) {
+    if value is less than min {
+        return min;
+    }
+    else if value is greater than max {
+        return max;
+    }
+    return value;
+}
+assert(clamp(5 and 0 and 10) is equal to 5);
+assert(clamp(-5 and 0 and 10) is equal to 0);
+assert(clamp(50 and 0 and 10) is equal to 10);
+assert(clamp(5, 0, 10) is equal to 5);       // commas work too
+assert(math.max(1 and 7 and 3) is equal to 7);
+
+// Inside call parentheses 'and' separates; group it to mean logical and
+function both(x) { return x; }
+assert(both((yes and yes)) is equal to true);
+
+// 'and' is logical again inside a table or a function written in the call
+function first(t) { return t[1]; }
+assert(first({yes and no}) is equal to false);
+function call(f) { return f(); }
+assert(call(function() { return yes and yes; }) is equal to true);
+
+// A variable may share a name with a verb
+let increase be 1;
+set increase to increase + 1;
+assert(increase is equal to 2);
+
+// else
+let grade be "";
+if a is less than 0 {
+    set grade to "neg";
+}
+else {
+    set grade to "pos";
+}
+assert(grade is equal to "pos");
+
+// Natural arithmetic
+let hp be 100;
+increase hp by 20;
+reduce hp by 10;
+multiply hp by 2;
+divide hp by 4;
+assert(hp is equal to 55);
+
+// Tasks are functions with no parameters
+let ran be 0;
+task Bump {
+    increase ran by 1;
+}
+Bump();
+Bump();
+assert(ran is equal to 2);
+
+// Loops keep Lua's forms with braces
+let sum be 0;
+for i = 1, 4 {
+    increase sum by i;
+}
+assert(sum is equal to 10);
+while sum is greater than 0 {
+    reduce sum by 3;
+}
+assert(sum is equal to -2);
+
+// Tables
+let point be {x = 1, y = 2};
+set point.x to 10;
+assert(point.x + point.y is equal to 12);
+
+// Programs run their start block after their declarations
+let order be "";
+program Main {
+    start {
+        set order to order + "start";
+        Helper();
+    }
+    task Helper {
+        set order to order + ",helper";
+    }
+}
+assert(order is equal to "start,helper");
+
+print "ok";
