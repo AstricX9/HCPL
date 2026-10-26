@@ -68,6 +68,7 @@ $(LUAC_T): $(LUAC_O) $(LUA_A)
 
 test:
 	./$(LUA_T) -v
+	./$(LUA_T) ../tests/language.hpl
 
 clean:
 	$(RM) $(ALL_T) $(ALL_O)

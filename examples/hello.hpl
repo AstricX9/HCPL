@@ -1,0 +1,20 @@
+include math;
+
+function clamp(value and min and max) {
+    if value is less than min {
+        return min;
+    }
+    else if value is greater than max {
+        return max;
+    }
+    return value;
+}
+
+program Main {
+    start {
+        let hp be 100;
+        increase hp by 20;
+        set hp to clamp(hp and 0 and 110);
+        print "HP is " + hp;          // HP is 110
+    }
+}

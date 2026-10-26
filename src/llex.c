@@ -46,7 +46,9 @@ static const char *const luaX_tokens [] = {
     "and", "break", "do", "else", "elseif",
     "end", "false", "for", "function", "global", "goto", "if",
     "in", "local", "nil", "not", "or", "repeat",
-    "return", "then", "true", "until", "while",
+    "return", "then", "true", "until",
+    "include", "is", "let", "print", "program", "set", "task",
+    "while",
     "//", "..", "...", "==", ">=", "<=", "~=",
     "<<", ">>", "::", "<eof>",
     "<number>", "<integer>", "<name>", "<string>"
@@ -81,6 +83,13 @@ void luaX_init (lua_State *L) {
     luaC_fix(L, obj2gco(ts));  /* reserved words are never collected */
     ts->extra = cast_byte(i+1);  /* reserved word */
   }
+  /* HCPL booleans: 'yes'/'no' are aliases for 'true'/'false' */
+  e = luaS_newliteral(L, "yes");
+  luaC_fix(L, obj2gco(e));
+  e->extra = cast_byte(TK_TRUE - FIRST_RESERVED + 1);
+  e = luaS_newliteral(L, "no");
+  luaC_fix(L, obj2gco(e));
+  e->extra = cast_byte(TK_FALSE - FIRST_RESERVED + 1);
 }
 
 
@@ -193,6 +202,7 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->glbn = luaS_newliteral(L, "global");  /* get "global" string */
   ls->glbn->extra = 0;  /* mark it as not reserved */
 #endif
+  ls->argand = 0;
   luaZ_resizebuffer(ls->L, ls->buff, LUA_MINBUFFER);  /* initialize buffer */
 }
 
@@ -245,6 +255,7 @@ static int read_numeral (LexState *ls, SemInfo *seminfo) {
   TValue obj;
   const char *expo = "Ee";
   int first = ls->current;
+  int unit = 0;
   lua_assert(lisdigit(ls->current));
   save_and_next(ls);
   if (first == '0' && check_next2(ls, "xX"))  /* hexadecimal? */
@@ -256,11 +267,27 @@ static int read_numeral (LexState *ls, SemInfo *seminfo) {
       save_and_next(ls);
     else break;
   }
+  if (ls->current == 's' || ls->current == 'm' || ls->current == 'h') {
+    /* HCPL duration ('30s', '2m', '1h'): a number of seconds */
+    unit = ls->current;
+    next(ls);
+    if (lislalpha(ls->current))  /* not a unit after all ('2min')? */
+      save(ls, unit);  /* keep it for the error message */
+  }
   if (lislalpha(ls->current))  /* is numeral touching a letter? */
     save_and_next(ls);  /* force an error */
   save(ls, '\0');
   if (luaO_str2num(luaZ_buffer(ls->buff), &obj) == 0)  /* format error? */
     lexerror(ls, "malformed number", TK_FLT);
+  if (unit) {
+    lua_Integer k = (unit == 's') ? 1 : (unit == 'm') ? 60 : 3600;
+    if (ttisinteger(&obj)) {
+      setivalue(&obj, ivalue(&obj) * k);
+    }
+    else {
+      setfltvalue(&obj, fltvalue(&obj) * cast_num(k));
+    }
+  }
   if (ttisinteger(&obj)) {
     seminfo->i = ivalue(&obj);
     return TK_INT;
@@ -522,9 +549,26 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         else if (check_next1(ls, '>')) return TK_SHR;  /* '>>' */
         else return '>';
       }
-      case '/': {
+      case '/': {  /* '/', or an HCPL line or block comment */
         next(ls);
-        if (check_next1(ls, '/')) return TK_IDIV;  /* '//' */
+        if (check_next1(ls, '/')) {  /* line comment */
+          while (!currIsNewline(ls) && ls->current != EOZ)
+            next(ls);
+          break;
+        }
+        else if (check_next1(ls, '*')) {  /* block comment */
+          for (;;) {
+            if (ls->current == EOZ)
+              lexerror(ls, "unfinished comment", TK_EOS);
+            else if (currIsNewline(ls))
+              inclinenumber(ls);
+            else if (check_next1(ls, '*') && check_next1(ls, '/'))
+              break;
+            else if (ls->current != '*')
+              next(ls);
+          }
+          break;
+        }
         else return '/';
       }
       case '~': {
